@@ -1,0 +1,120 @@
+description 'Paypal AWS Lambda'
+apply plugin: 'java'
+apply plugin: 'maven-publish'
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+buildscript {
+	repositories {
+		mavenCentral()
+		maven { url "https://plugins.gradle.org/m2/" }
+	}
+	dependencies {
+		classpath "jp.classmethod.aws:gradle-aws-plugin:0.+"
+		classpath 'com.github.jengelman.gradle.plugins:shadow:2.0.1'
+	}
+}
+
+apply plugin: "jp.classmethod.aws.s3"
+apply plugin: 'com.github.johnrengelman.shadow'
+
+repositories {
+    maven {
+       url 'https://repo.1capp.com/nexus/repository/maven-public/'
+    }
+    maven {
+       url 'https://dl.bintray.com/caviarexpert/mvn-store/'
+    }
+}
+
+dependencies {
+	compile 'com.google.guava:guava:22.0'
+    
+    compile 'com.amazonaws:aws-lambda-java-core:1.1.0'
+    compile 'com.fasterxml.jackson.core:jackson-databind:2.8.9'
+    compile 'io.symphonia:lambda-logging:1.0.0'
+    compile 'com.paypal.sdk:rest-api-sdk:1.13.1'
+    compile 'com.itranga.cav:lambda-common:0.0.1'
+
+    testImplementation 'junit:junit:4.12'
+
+}
+
+shadowJar {
+   baseName = 'shadow'
+   classifier = null
+   version = null
+}
+
+aws {
+	profileName = "default"
+	region = "eu-west-1"
+}
+
+def myBucketName = 'caviarexpert-lambdas'
+def myKey = 'paypal'
+
+
+import com.amazonaws.auth.policy.Policy
+import com.amazonaws.auth.policy.Principal
+import com.amazonaws.auth.policy.Statement
+import com.amazonaws.auth.policy.actions.S3Actions
+import com.amazonaws.auth.policy.resources.S3BucketResource
+import com.amazonaws.auth.policy.resources.S3ObjectResource
+import com.amazonaws.services.s3.model.ObjectMetadata
+
+
+task createBucket(type: jp.classmethod.aws.gradle.s3.CreateBucketTask) {
+	bucketName myBucketName
+	region aws.region
+	ifNotExists true
+}
+
+task deleteBucket(type: jp.classmethod.aws.gradle.s3.DeleteBucketTask) {
+	bucketName myBucketName
+	ifExists true
+	deleteObjects true
+}
+
+task s3Deploy (dependsOn: [createBucket, shadowJar]){
+	description "Create JAR and upload to AWS S3"
+	group "AWS"
+	doLast {
+		deploy.file = shadowJar.archivePath
+		def hash = calcSha256(deploy.file).encodeBase64().toString()
+		deploy.objectMetadata.addUserMetadata("Base64sha256", hash)
+		deploy.execute()
+	}
+}
+
+task deploy(type: jp.classmethod.aws.gradle.s3.AmazonS3FileUploadTask) {
+		bucketName myBucketName
+		key myKey
+		overwrite true
+		def m = new com.amazonaws.services.s3.model.ObjectMetadata()
+		m.setCacheControl("no-cache, no-store")
+		objectMetadata = m
+}
+
+task setBucketPolicy(type: jp.classmethod.aws.gradle.s3.BucketPolicyTask, dependsOn: createBucket) {
+	bucketName myBucketName
+	policy new Policy().withStatements(
+			new Statement(Statement.Effect.Allow)
+					.withPrincipals(Principal.AllUsers)
+					.withActions(S3Actions.GetObject)
+					.withResources(new S3ObjectResource(myBucketName, "*")),
+			new Statement(Statement.Effect.Allow)
+					.withPrincipals(Principal.AllUsers)
+					.withActions(S3Actions.ListObjects)
+					.withResources(new S3BucketResource(myBucketName))
+	)
+}
+
+def calcSha256(file){
+   file.withInputStream {
+      new java.security.DigestInputStream(it, java.security.MessageDigest.getInstance('SHA-256')).withStream {
+         it.eachByte {}
+         it.messageDigest.digest()
+      }
+   }
+}
